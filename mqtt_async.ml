@@ -155,11 +155,11 @@ let rec get_packets reader =
   receive_packet reader >>=
   function
   | Error _ -> return ()
-  | Ok header -> if header.msg = PUBLISH then
+  | Ok header -> (if header.msg = PUBLISH then
+                     (* only concerned about PUBLISH packets for now*) 
                      (Pipe.write pw header)
                   else
-                     return () 
-  >>= fun () -> get_packets reader
+                     return () ) >>= fun() -> get_packets reader
 
 let charlist_to_str l =
   let res = String.create (List.length l) in
@@ -209,12 +209,21 @@ let connect ~host ~port =
     { reader;
       writer;
       header_buffer=String.create header_length;
-    }
+    }  
+
+let send_ping_req w =
+  let ping_str = charlist_to_str [
+    char_of_int (msg_header PINGREQ false 0 false);  
+    Char.chr 0  (* remaining length *)
+  ] in
+   (Writer.write ~pos:0 ~len:(String.length ping_str) w ping_str) 
+  
 
 let rec start_ping w = 
-  printf "Ping\n";
-  after (Core.Time.Span.of_sec 10.0) >>=
-  fun () -> start_ping w 
+  after (Core.Time.Span.of_sec 5.0) >>>
+  fun () -> printf "Ping\n"; 
+            send_ping_req w; 
+            start_ping w 
 
 
 let connect_to_broker server_name port_num f =
@@ -243,16 +252,12 @@ let connect_to_broker server_name port_num f =
   receive_connack t.reader >>|
   function 
   | Ok pass_str  -> 
-    printf "%s\n" pass_str ;
-    get_packets t.reader >>=
-    fun () -> start_ping t.writer   
-
-(*
-    fun () ->
-    f t  >>|
+    printf "Ok: %s\n" pass_str ;
+    ignore(get_packets t.reader) ;(*>>=*)
+    start_ping t.writer ;  
+    fun () -> f t  >>|
     fun () -> Writer.close t.writer >>|
     fun () -> Reader.close
-*)
 
   | Error errstr ->  
     failwith errstr 
