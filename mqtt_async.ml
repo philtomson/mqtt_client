@@ -274,8 +274,6 @@ let send_ping_req w =
   ] in
    Writer.write ~pos:0 ~len:(String.length ping_str) w ping_str ;
    Writer.flushed w 
-
-
    
 
 let rec ping_loop w = 
@@ -311,6 +309,19 @@ let subscribe topics w =
     Writer.flushed w in
   ignore( subscribe' : ( unit Deferred.t))
   
+let publish ?(dup=false) ?(qos=0) ?(retain=false) topic payload w =
+  let msg_id_str = if qos > 0 then get_msg_id_bytes else "" in
+  let topic_len_str = int_to_str2 (String.length topic) in
+  let var_header = topic_len_str ^ topic ^ msg_id_str in
+  let publish_str' = var_header ^ payload in
+  let remaining_bytes = List.map (fun i -> char_of_int i) (multi_byte_len (String.length publish_str'))
+                       |> charlist_to_str in
+  let publish_str = (string_of_char (msg_header PUBLISH dup qos retain)) ^
+                     remaining_bytes ^
+                     publish_str' in
+  Writer.write ~pos:0 ~len:(String.length publish_str) w publish_str;
+  Writer.flushed w 
+
 
 let connect_to_broker server_name port_num f =
   let connect_to_broker' () = 
