@@ -32,8 +32,6 @@ type t = {
 
 let header_length = 256 (* Adjust this! *)
 
-
-
 let broker = "test.mosquitto.org"
 (*let broker = "localhost"*)
 let port   = 1883
