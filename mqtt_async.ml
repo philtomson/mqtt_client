@@ -5,6 +5,25 @@ open Async.Std
 ocamlfind ocamlopt -package bitstring,bitstring.syntax -syntax bitstring.syntax -linkpkg mqtt.ml -o mqtt
 *)
 
+let string_of_char c = String.make 1 c 
+
+let msg_id = ref 0;
+
+type bytes_char_t = { lsb: char; msb: char }
+
+(* pass in an int and get two char string back *)
+let int_to_str2 i = 
+  (string_of_char (char_of_int ((i lsr 8) land 0xFF))) ^ 
+  (string_of_char (char_of_int (i land 0xFF)))
+
+(* 2 char string to int *)
+let str2_to_int s = (((int_of_char s.[0]) lsl 8) land 0xFF00) lor 
+                    ((int_of_char s.[1]) land 0xFF) 
+
+let get_msg_id_bytes = 
+  incr msg_id;
+  int_to_str2 !msg_id
+
 type t = { 
     reader: Reader.t;
     writer: Writer.t;
@@ -30,6 +49,14 @@ type header_t = {    msg:            msg_type;
                      remaining_len:  int;
                      mutable buffer: string;
                }
+
+type packet_t = {
+                   header: header_t;
+                   topic:  string ;
+                   msg_id: int;
+                   payload: string option 
+                }
+
 
 let (pr,pw) = Pipe.create ()
 
@@ -85,13 +112,14 @@ let do_while f p ~init =
   in
   loop init
 
+let charlist_to_str l =
+  let len = List.length l in
+  let res = String.create len in
+  let rec imp i = function
+  | [] -> res
+  | c :: l -> if i > len then (printf "i is out of range%d\n" i) else (); res.[i] <- c; imp (i + 1) l in
+  imp 0 l;; 
 
-(*do_while (fun v ->
-            let v = succ v in
-            Printf.printf "%d\n" v;
-            (v))
-         (fun v -> v mod 6 <> 0)
-         ~init:0 *)
 
 let get_remaining_len reader =
   let rec aux multiplier value =
@@ -110,21 +138,22 @@ let  str_to_charlist s =
   let rec aux s lst = 
     let len = String.length s in
     match  len with
-    0 -> lst
-  | _ -> (aux (String.sub s 1 (len-1)) (s.[0]::lst)) in
+      0 -> lst
+    | _ -> (aux (String.sub s 1 (len-1)) (s.[0]::lst)) in
+  printf "str_to_chrlist\n";
   List.rev (aux s []) 
 
 let str_to_intlist s = List.map (fun c -> Char.code c) (str_to_charlist s)
   
 
 let msg_header msg dup qos retain =
-  (((msg_type_to_int msg) land 0xFF) lsl 4) lor
-  ((if dup then 0x1 else 0x0) lsl        3) lor
-  ((qos land 0x03) lsl                   1) lor
-  (if retain then 0x1 else 0x0)
+  char_of_int ((((msg_type_to_int msg) land 0xFF) lsl 4) lor
+               ((if dup then 0x1 else 0x0) lsl        3) lor
+               ((qos land 0x03) lsl                   1) lor
+               (if retain then 0x1 else 0x0))
 
 
-let deconstruct_header reader = 
+let get_header reader = 
   Reader.read_char reader 
   >>= function
       | `Eof  -> failwith "No header available!"
@@ -132,8 +161,8 @@ let deconstruct_header reader =
       let mtype = match (int_to_msg_type ((byte_1 lsr 4) land 0xFF)) with 
       | None -> failwith "Not a legal msg type!"
       | Some msg -> msg in
-      get_remaining_len reader
-  >>= fun remaining_bytes -> 
+      get_remaining_len reader >>=
+      fun remaining_bytes -> 
       let dup   = if ((byte_1 lsr 3) land 0x01) = 1 then true else false in
       let qos   = (byte_1 lsr 1) land 0x3 in
       let retain= if (byte_1 land 0x01) = 1 then true else false in
@@ -141,9 +170,8 @@ let deconstruct_header reader =
                remaining_len= remaining_bytes; buffer="" }
 
 (* try to read a packet from the broker *)
-(* TODO:Also send keep-alive ping packets *)
 let receive_packet reader = 
-  deconstruct_header reader 
+  get_header reader 
   >>= fun header ->
       let buffer = String.create header.remaining_len in 
       Reader.really_read reader ~len:header.remaining_len buffer 
@@ -151,41 +179,74 @@ let receive_packet reader =
       | `Eof _ -> return (Core.Std.Result.Error "Failed to receive packet: " )
       | `Ok -> header.buffer <- buffer; return (Core.Std.Result.Ok header) 
 
-let rec get_packets reader = 
+let send_puback w msg_idstr =
+  let puback_str = charlist_to_str [
+    (msg_header PUBACK false 0 false);  
+    Char.chr 2;
+      (* remaining length *)
+  ] ^ msg_idstr in
+   printf "Send PUBACK\n";
+   Writer.write ~pos:0 ~len:(String.length puback_str) w puback_str ;
+   Writer.flushed w 
+
+let rec receive_packets reader writer = 
   receive_packet reader >>=
   function
   | Error _ -> return ()
   | Ok header -> (if header.msg = PUBLISH then
+                  (
                      (* only concerned about PUBLISH packets for now*) 
-                     (Pipe.write pw header)
+                     (* get payload from the buffer *)
+                      (printf "\nGot a PUBLISH packet back from server\n");
+                     let msg_id_len = (if header.qos = 0 then 0 else 2) in
+                     let topic_len = ( (Char.code header.buffer.[0]) lsl 8) lor 
+                                     (0xFF land (Char.code header.buffer.[1])) in
+                     let topic =   String.sub header.buffer 2 topic_len in
+                     let _ = printf "  topic is: %s\n" topic in
+
+                     if header.qos <> 1 then 
+                       printf "!!! qos is %d\n" header.qos
+                     else (); 
+  
+(* following line has an index out of range error!! *)
+                     (*let msg_id  =   ((Char.code header.buffer.[topic_len+2]) lsl 8) lor
+                                     (0xFF land (Char.code header.buffer.[topic_len+3])) in *)
+                     let msg_id = ( if header.qos = 0 then 0 
+                                    else ((Char.code header.buffer.[topic_len+2]) lsl 8) lor
+                                     (0xFF land (Char.code header.buffer.[topic_len+3])) ) in
+
+                     let _ = printf "  msg_id is: %d\n" msg_id  in
+                     let payload_len=header.remaining_len - topic_len - 2 - msg_id_len in
+                     let buffer_len = String.length header.buffer in
+                     let payload = Some (String.sub header.buffer (topic_len + 2 + msg_id_len) payload_len) in
+
+                     Pipe.write pw { header ; 
+                                     topic ;
+                                     msg_id;
+                                     payload 
+                                   } >>=
+                     fun () -> send_puback writer (int_to_str2 msg_id)
+                  )
                   else
-                     return () ) >>= fun() -> get_packets reader
+                  (
+                     printf "received non-PUBLISH msg from server\n";
+                     (* TODO: implement QOS responses*)
+                     return () )) 
+                  >>= fun() -> receive_packets reader writer
 
-let charlist_to_str l =
-  let res = String.create (List.length l) in
-  let rec imp i = function
-  | [] -> res
-  | c :: l -> res.[i] <- c; imp (i + 1) l in
-  imp 0 l;; 
+let rec print_pub_msg () = 
+  Pipe.read pr >>=
+  function
+  | `Eof -> return ()
+  | `Ok pkt -> (*first send back PUBACK *) 
+               match pkt.payload with 
+               | None -> return ()
+               | Some p -> return (printf "Payload: %s\n" p) >>=
+                           fun () -> print_pub_msg () 
 
-let packet = List.map (fun b -> Char.chr b) [0x10;0x23;0x0 ; 0x6; 0x4d; 0x51; 0x49; 0x73; 0x64; 0x70; 0x3; 0x2; 0x00; 0xf; 0x0; 0x15; 0x72; 0x75; 0x62; 0x79; 0x5f;0x38; 0x77; 0x33; 0x6a; 0x6d; 0x65; 0x72; 0x6d; 0x6e; 0x33; 0x6c; 0x36; 0x66 ;0x37; 0x33; 0x6a ] 
-
-(*
-let receive_connack sock = 
-  let buffer_size = 4096 in 
-  let buffer = String.create buffer_size in 
-  let bytes_back =  read sock buffer 0 4 in
-  if (int_of_char buffer.[0]) != 0x20 then begin
-    failwith "did not receive a CONNACK"
-  end;
-  if (int_of_char buffer.[3]) != 0 then begin
-    failwith "connection was not established\n"
-  end;
-  bytes_back, buffer
-*)
 
 let receive_connack reader = 
-  deconstruct_header reader 
+  get_header reader 
   >>= fun header ->
     if (header.msg <> CONNACK) then begin
       failwith "did not receive a CONNACK"
@@ -213,22 +274,49 @@ let connect ~host ~port =
 
 let send_ping_req w =
   let ping_str = charlist_to_str [
-    char_of_int (msg_header PINGREQ false 0 false);  
+    (msg_header PINGREQ false 0 false);  
     Char.chr 0  (* remaining length *)
   ] in
-   (Writer.write ~pos:0 ~len:(String.length ping_str) w ping_str) 
-  
+   Writer.write ~pos:0 ~len:(String.length ping_str) w ping_str ;
+   Writer.flushed w 
 
-let rec start_ping w = 
-  after (Core.Time.Span.of_sec 5.0) >>>
+
+   
+
+let rec ping_loop w = 
+  after (Core.Time.Span.of_sec 5.0) >>=
   fun () -> printf "Ping\n"; 
-            send_ping_req w; 
-            start_ping w 
+            send_ping_req w >>=  
+            fun () -> ping_loop w 
 
+let multi_byte_len len = 
+  let rec aux bodylen acc = match bodylen with
+  | 0 -> List.rev acc 
+  | _ -> let bodylen' = bodylen/128 in
+         let digit    = (bodylen mod 0x80) lor (if bodylen' > 0 then 0x80 else 0x00) in
+         aux bodylen' (digit::acc) in
+  aux len [] 
+
+let subscribe topics w =
+  (* TODO: is msg_id optional here in certain cases??? *)
+  let payload =  get_msg_id_bytes ^ 
+                 List.fold_left 
+                   (fun a b -> a^
+                             int_to_str2(String.length b)^ (* 2bytes for len*)
+                             b ^ string_of_char (char_of_int 1)  (* QOS fixed at 1*)
+                             ) "" topics in
+  let remaining_len = List.map (fun i -> char_of_int i) (multi_byte_len (String.length payload)) 
+                    |> charlist_to_str in
+  let subscribe_str = (string_of_char (msg_header SUBSCRIBE false 1 false)) ^ 
+                      remaining_len ^
+                      payload in
+  Writer.write ~pos:0 ~len:(String.length subscribe_str) w subscribe_str;
+  Writer.flushed w
+  
 
 let connect_to_broker server_name port_num f =
   let connect_str = charlist_to_str [
-    char_of_int (msg_header CONNECT false 0 false); 
+    (msg_header CONNECT false 0 false); 
     Char.chr 19; (* remaining length *)
     Char.chr 0x00; (* protocol length MSB *) 
     Char.chr 0x06; (* protocol length LSB *) 
@@ -253,9 +341,9 @@ let connect_to_broker server_name port_num f =
   function 
   | Ok pass_str  -> 
     printf "Ok: %s\n" pass_str ;
-    ignore(get_packets t.reader) ;(*>>=*)
-    start_ping t.writer ;  
-    fun () -> f t  >>|
+    ignore(receive_packets t.reader t.writer) ;(*>>=*)
+    ignore (ping_loop t.writer) ;
+    f t  ;
     fun () -> Writer.close t.writer >>|
     fun () -> Reader.close
 
@@ -265,8 +353,11 @@ let connect_to_broker server_name port_num f =
    
 let main () =  
    Pipe.set_size_budget pr 256 ;
-   ignore(connect_to_broker broker port  (fun _  ->
-     return (printf "done\n")
+   ignore(print_pub_msg () ); 
+   ignore(connect_to_broker broker port  (fun t  ->
+      printf "Start user section\n";
+      ignore(subscribe ["#"] t.writer); 
+      printf "done\n"
    ));
    Scheduler.go ()
    ;; 
