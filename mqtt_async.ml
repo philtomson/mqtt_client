@@ -117,7 +117,7 @@ let charlist_to_str l =
   let res = String.create len in
   let rec imp i = function
   | [] -> res
-  | c :: l -> if i > len then (printf "i is out of range%d\n" i) else (); res.[i] <- c; imp (i + 1) l in
+  | c :: l -> res.[i] <- c; imp (i + 1) l in
   imp 0 l;; 
 
 
@@ -202,24 +202,13 @@ let rec receive_packets reader writer =
                      let topic_len = ( (Char.code header.buffer.[0]) lsl 8) lor 
                                      (0xFF land (Char.code header.buffer.[1])) in
                      let topic =   String.sub header.buffer 2 topic_len in
-                     let _ = printf "  topic is: %s\n" topic in
 
-                     if header.qos <> 1 then 
-                       printf "!!! qos is %d\n" header.qos
-                     else (); 
-  
-(* following line has an index out of range error!! *)
-                     (*let msg_id  =   ((Char.code header.buffer.[topic_len+2]) lsl 8) lor
-                                     (0xFF land (Char.code header.buffer.[topic_len+3])) in *)
                      let msg_id = ( if header.qos = 0 then 0 
                                     else ((Char.code header.buffer.[topic_len+2]) lsl 8) lor
                                      (0xFF land (Char.code header.buffer.[topic_len+3])) ) in
 
-                     let _ = printf "  msg_id is: %d\n" msg_id  in
                      let payload_len=header.remaining_len - topic_len - 2 - msg_id_len in
-                     let buffer_len = String.length header.buffer in
                      let payload = Some (String.sub header.buffer (topic_len + 2 + msg_id_len) payload_len) in
-
                      Pipe.write pw { header ; 
                                      topic ;
                                      msg_id;
@@ -234,16 +223,22 @@ let rec receive_packets reader writer =
                      return () )) 
                   >>= fun() -> receive_packets reader writer
 
-let rec print_pub_msg () = 
-  Pipe.read pr >>=
-  function
-  | `Eof -> return ()
-  | `Ok pkt -> (*first send back PUBACK *) 
-               match pkt.payload with 
-               | None -> return ()
-               | Some p -> return (printf "Payload: %s\n" p) >>=
-                           fun () -> print_pub_msg () 
-
+(* process a PUBLISH packet received from broker 
+   process_publish_pkt f 
+   where topic, payload and msg_id are passed to f
+*) 
+let process_publish_pkt f = 
+  let rec process' ()  =
+	  Pipe.read pr >>=
+	  function
+	  | `Eof -> return ()
+	  | `Ok pkt -> (*first send back PUBACK *) 
+		       match pkt with 
+		       | { payload = None; _ } -> return ()
+		       | { topic = t; payload = Some p; msg_id = m; _ }  -> 
+                         return (f t p m) >>=
+                         fun () -> process' ()   in
+  ignore( process' () : (unit Deferred.t) )
 
 let receive_connack reader = 
   get_header reader 
@@ -298,69 +293,60 @@ let multi_byte_len len =
   aux len [] 
 
 let subscribe topics w =
-  (* TODO: is msg_id optional here in certain cases??? *)
-  let payload =  get_msg_id_bytes ^ 
-                 List.fold_left 
-                   (fun a b -> a^
+  let subscribe' = 
+    let payload =  get_msg_id_bytes ^ 
+                   List.fold_left 
+                     (fun a b -> 
+                             a^ (*accumulator*)
                              int_to_str2(String.length b)^ (* 2bytes for len*)
-                             b ^ string_of_char (char_of_int 1)  (* QOS fixed at 1*)
-                             ) "" topics in
-  let remaining_len = List.map (fun i -> char_of_int i) (multi_byte_len (String.length payload)) 
-                    |> charlist_to_str in
-  let subscribe_str = (string_of_char (msg_header SUBSCRIBE false 1 false)) ^ 
-                      remaining_len ^
-                      payload in
-  Writer.write ~pos:0 ~len:(String.length subscribe_str) w subscribe_str;
-  Writer.flushed w
+                             b ^ (* topic *)
+                             string_of_char (char_of_int 1)  (* QOS fixed at 1*)
+                     ) "" topics in
+    let remaining_len = List.map (fun i -> char_of_int i) (multi_byte_len (String.length payload)) 
+                        |> charlist_to_str in
+    let subscribe_str = (string_of_char (msg_header SUBSCRIBE false 1 false)) ^ 
+                        remaining_len ^
+                        payload in
+    Writer.write ~pos:0 ~len:(String.length subscribe_str) w subscribe_str;
+    Writer.flushed w in
+  ignore( subscribe' : ( unit Deferred.t))
   
 
 let connect_to_broker server_name port_num f =
-  let connect_str = charlist_to_str [
-    (msg_header CONNECT false 0 false); 
-    Char.chr 19; (* remaining length *)
-    Char.chr 0x00; (* protocol length MSB *) 
-    Char.chr 0x06; (* protocol length LSB *) 
-    'M';'Q';'I';'s';'d';'p'; (* protocol *)
-    Char.chr version; 
-    Char.chr 0x00; (* connect flags  why was it CE?*)
-    Char.chr 0x00; (* keep alive timer MSB*)
-    Char.chr 0x0F;  (* keep alive timer LSB*)
-    Char.chr 0x00; (* client ID len MSB *)
-    Char.chr 0x05; (* client ID len LSB *)
-    (* client id *)
-    'o';'c';'a';'m';'l'
-  ] in
-  let _ = printf "connect_str length: %d \n" (String.length connect_str) in
+  let connect_to_broker' () = 
+    let connect_str = charlist_to_str [
+      (msg_header CONNECT false 0 false); 
+      Char.chr 19; (* remaining length *)
+      Char.chr 0x00; (* protocol length MSB *) 
+      Char.chr 0x06; (* protocol length LSB *) 
+      'M';'Q';'I';'s';'d';'p'; (* protocol *)
+      Char.chr version; 
+      Char.chr 0x00; (* connect flags  why was it CE?*)
+      Char.chr 0x00; (* keep alive timer MSB*)
+      Char.chr 0x0F;  (* keep alive timer LSB*)
+      Char.chr 0x00; (* client ID len MSB *)
+      Char.chr 0x05; (* client ID len LSB *)
+      (* client id *)
+      'o';'c';'a';'m';'l'
+    ] in
+    let _ = printf "connect_str length: %d \n" (String.length connect_str) in
   
-  connect ~host:server_name ~port:port_num 
-  >>= fun t -> 
-  printf "Connected!\n";
-  (Writer.write ~pos:0 ~len:(String.length connect_str) t.writer connect_str) ;
-  printf "wait for connack...\n";
-  receive_connack t.reader >>|
-  function 
-  | Ok pass_str  -> 
-    printf "Ok: %s\n" pass_str ;
-    ignore(receive_packets t.reader t.writer) ;(*>>=*)
-    ignore (ping_loop t.writer) ;
-    f t  ;
-    fun () -> Writer.close t.writer >>|
-    fun () -> Reader.close
-
-  | Error errstr ->  
-    failwith errstr 
+    connect ~host:server_name ~port:port_num 
+    >>= fun t -> 
+    printf "Connected!\n";
+    (Writer.write ~pos:0 ~len:(String.length connect_str) t.writer connect_str) ;
+    printf "wait for connack...\n";
+    receive_connack t.reader >>|
+    function 
+    | Ok pass_str  -> 
+      printf "Ok: %s\n" pass_str ;
+      ignore(receive_packets t.reader t.writer) ;(*>>=*)
+      ignore (ping_loop t.writer) ;
+      f t  ;
+      fun () -> Writer.close t.writer >>|
+      fun () -> Reader.close
+    | Error errstr ->  
+      failwith errstr in
+  ignore(connect_to_broker' () )
 
    
-let main () =  
-   Pipe.set_size_budget pr 256 ;
-   ignore(print_pub_msg () ); 
-   ignore(connect_to_broker broker port  (fun t  ->
-      printf "Start user section\n";
-      ignore(subscribe ["#"] t.writer); 
-      printf "done\n"
-   ));
-   Scheduler.go ()
-   ;; 
-
-main () 
-
