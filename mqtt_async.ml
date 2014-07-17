@@ -27,14 +27,7 @@ let get_msg_id_bytes =
 type t = { 
     reader: Reader.t;
     writer: Writer.t;
-    header_buffer: string
 }
-
-let header_length = 256 (* Adjust this! *)
-
-let broker = "test.mosquitto.org"
-(*let broker = "localhost"*)
-let port   = 1883
 
 type msg_type = CONNECT | CONNACK | PUBLISH | PUBACK | PUBREC | PUBREL | PUBCOMP |
                 SUBSCRIBE | SUBACK | UNSUBSCRIBE | UNSUBACK | PINGREQ | PINGRESP |
@@ -262,7 +255,6 @@ let connect ~host ~port =
     printf "Connect succeeded\n";
     { reader;
       writer;
-      header_buffer=String.create header_length;
     }  
 
 let send_ping_req w =
@@ -321,26 +313,26 @@ let publish ?(dup=false) ?(qos=0) ?(retain=false) topic payload w =
   Writer.flushed w 
 
 
-let connect_to_broker server_name port_num f =
+let connect_to_broker ~broker ~port f =
   let connect_to_broker' () = 
-    let connect_str = charlist_to_str [
+    let clientid = "OCaml_"^Core.Std.Uuid.to_string (Core.Std.Uuid.create () ) in
+    let connect_str = (charlist_to_str [
       (msg_header CONNECT false 0 false); 
-      Char.chr 19; (* remaining length *)
+      Char.chr (14+ (String.length clientid)); (* remaining length *)
       Char.chr 0x00; (* protocol length MSB *) 
       Char.chr 0x06; (* protocol length LSB *) 
       'M';'Q';'I';'s';'d';'p'; (* protocol *)
       Char.chr version; 
-      Char.chr 0x00; (* connect flags  why was it CE?*)
+      Char.chr 0x00; (* connect flags *)
       Char.chr 0x00; (* keep alive timer MSB*)
       Char.chr 0x0F;  (* keep alive timer LSB*)
       Char.chr 0x00; (* client ID len MSB *)
       Char.chr 0x05; (* client ID len LSB *)
-      (* client id *)
-      'o';'c';'a';'m';'l'
-    ] in
+    ])^clientid in
     let _ = printf "connect_str length: %d \n" (String.length connect_str) in
+    let _ = printf "connect_str is: %s \n" connect_str in
   
-    connect ~host:server_name ~port:port_num 
+    connect ~host:broker ~port:port
     >>= fun t -> 
     printf "Connected!\n";
     (Writer.write ~pos:0 ~len:(String.length connect_str) t.writer connect_str) ;

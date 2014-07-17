@@ -14,7 +14,7 @@ To build:
 $ corebuild -pkg async,unix  test_mqtt.native
 
 To run:
-$ test_mqtt.native
+$ test_mqtt.native [-port <port_num>] [-broker <broker address>]
 
 (NOTE: currently hardcoded to connect to the MQTT testing broker at test.mosquitto.org)
 
