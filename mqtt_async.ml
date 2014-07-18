@@ -92,17 +92,6 @@ let keepalive       = 15
 let version         = 3
 
 
-let  qOS0 =        (0 lsl 1)
-let  qOS1 =        (1 lsl 1)
-let  qOS2 =        (2 lsl 1)
-
-let do_while f p ~init =
-  let rec loop v =
-    let v = f v in
-    if p v then loop v
-  in
-  loop init
-
 let charlist_to_str l =
   let len = List.length l in
   let res = String.create len in
@@ -124,7 +113,6 @@ let get_remaining_len reader =
     aux 1 0   
 
 
-
 let  str_to_charlist s = 
   let rec aux s lst = 
     let len = String.length s in
@@ -136,13 +124,11 @@ let  str_to_charlist s =
 
 let str_to_intlist s = List.map (fun c -> Char.code c) (str_to_charlist s)
   
-
 let msg_header msg dup qos retain =
   char_of_int ((((msg_type_to_int msg) land 0xFF) lsl 4) lor
                ((if dup then 0x1 else 0x0) lsl        3) lor
                ((qos land 0x03) lsl                   1) lor
                (if retain then 0x1 else 0x0))
-
 
 let get_header reader = 
   Reader.read_char reader 
@@ -272,6 +258,7 @@ let rec ping_loop w =
             send_ping_req w >>=  
             fun () -> ping_loop w 
 
+
 let multi_byte_len len = 
   let rec aux bodylen acc = match bodylen with
   | 0 -> List.rev acc 
@@ -312,6 +299,13 @@ let publish ?(dup=false) ?(qos=0) ?(retain=false) topic payload w =
   Writer.write ~pos:0 ~len:(String.length publish_str) w publish_str;
   Writer.flushed w 
 
+let publish_periodically ?(qos=0) ?(period=1.0) ~topic f w =
+  let rec publish_periodically' () =
+    let pub_str = f () in
+    after (Core.Time.Span.of_sec period) >>=
+    fun () -> publish ~qos topic pub_str w >>=
+    fun () -> publish_periodically' () in
+  ignore(publish_periodically' () : (unit Deferred.t) )
 
 let connect_to_broker ~broker ~port f =
   let connect_to_broker' () = 

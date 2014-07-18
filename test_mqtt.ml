@@ -2,6 +2,9 @@ open Sys
 open Async.Std
 open Mqtt_async
 
+let get_temperature () = 
+  20.0 +. Random.float 1.0 
+
 let run ~broker ~port () =  
    Pipe.set_size_budget pr 256 ;
    connect_to_broker ~broker ~port (fun t  ->
@@ -14,8 +17,7 @@ let run ~broker ~port () =
                           );
      printf "Start user section\n";
      subscribe ["#"] t.writer ;
-     ignore(publish "TOPIC_42" "THE ANSWER TO LIFE, THE UNIVERSE AND EVERYTHING!!!" t.writer);
-     printf "subscribed\n"
+     publish_periodically ~topic:"temperature" (fun () -> string_of_float(get_temperature ()) ) t.writer;
    ); 
    Deferred.never () 
 
