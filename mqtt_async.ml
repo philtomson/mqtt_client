@@ -5,9 +5,11 @@ open Async.Std
 ocamlfind ocamlopt -package bitstring,bitstring.syntax -syntax bitstring.syntax -linkpkg mqtt.ml -o mqtt
 *)
 
+let keep_alive_timer_interval_default = 10.0  (*seconds*)
+
 let string_of_char c = String.make 1 c 
 
-let msg_id = ref 0;
+let msg_id = ref 0
 
 type bytes_char_t = { lsb: char; msb: char }
 
@@ -67,6 +69,23 @@ let msg_type_to_int msg = match msg with
 | PINGRESP    -> 13
 | DISONNECT   -> 14
 | RESERVED    -> 15
+
+let msg_type_to_str msg = match msg with
+  CONNECT     -> "CONNECT"
+| CONNACK     -> "CONNACK"
+| PUBLISH     -> "PUBLISH"
+| PUBACK      -> "PUBACK"
+| PUBREC      -> "PUBREC"
+| PUBREL      -> "PUBREL"
+| PUBCOMP     -> "PUBCOMP"
+| SUBSCRIBE   -> "SUBSCRIBE"
+| SUBACK      -> "SUBACK"
+| UNSUBSCRIBE -> "UNSUBSCRIBE"
+| UNSUBACK    -> "UNSUBACK"
+| PINGREQ     -> "PINGREQ"
+| PINGRESP    -> "PINGRESP"
+| DISONNECT   -> "DISCONNECT"
+| RESERVED    -> "RESERVED"
 
 let int_to_msg_type b = match b with
   1 -> Some CONNECT 
@@ -170,8 +189,9 @@ let rec receive_packets reader writer =
   receive_packet reader >>=
   function
   | Error _ -> return ()
-  | Ok header -> (if header.msg = PUBLISH then
-                  (
+  | Ok header -> (match header.msg with  
+                  | PUBLISH ->
+                     (
                      (* only concerned about PUBLISH packets for now*) 
                      (* get payload from the buffer *)
                       (printf "\nGot a PUBLISH packet back from server\n");
@@ -192,10 +212,10 @@ let rec receive_packets reader writer =
                                      payload 
                                    } >>=
                      fun () -> send_puback writer (int_to_str2 msg_id)
-                  )
-                  else
-                  (
-                     printf "received non-PUBLISH msg from server\n";
+                     )
+                  | _ ->
+                    (
+                     printf "received %s msg from server\n" (msg_type_to_str header.msg);
                      (* TODO: implement QOS responses*)
                      return () )) 
                   >>= fun() -> receive_packets reader writer
@@ -252,8 +272,8 @@ let send_ping_req w =
    Writer.flushed w 
    
 
-let rec ping_loop w = 
-  after (Core.Time.Span.of_sec 5.0) >>=
+let rec ping_loop ?(interval=keep_alive_timer_interval_default) w = 
+  after (Core.Time.Span.of_sec interval) >>=
   fun () -> printf "Ping\n"; 
             send_ping_req w >>=  
             fun () -> ping_loop w 
@@ -267,16 +287,17 @@ let multi_byte_len len =
          aux bodylen' (digit::acc) in
   aux len [] 
 
-let subscribe topics w =
+let subscribe ?(qos=1) ~topics w =
   let subscribe' = 
-    let payload =  get_msg_id_bytes ^ 
-                   List.fold_left 
-                     (fun a b -> 
-                             a^ (*accumulator*)
-                             int_to_str2(String.length b)^ (* 2bytes for len*)
-                             b ^ (* topic *)
-                             string_of_char (char_of_int 1)  (* QOS fixed at 1*)
-                     ) "" topics in
+    let payload =  
+      (if qos > 0 then get_msg_id_bytes else "") ^ 
+      List.fold_left 
+        (fun a topic -> 
+          a^ (*accumulator*)
+          int_to_str2(String.length topic)^ (* 2bytes for len*)
+	  topic ^ (* topic *)
+	  string_of_char (char_of_int qos)  
+        ) "" topics in
     let remaining_len = List.map (fun i -> char_of_int i) (multi_byte_len (String.length payload)) 
                         |> charlist_to_str in
     let subscribe_str = (string_of_char (msg_header SUBSCRIBE false 1 false)) ^ 
@@ -285,6 +306,29 @@ let subscribe topics w =
     Writer.write ~pos:0 ~len:(String.length subscribe_str) w subscribe_str;
     Writer.flushed w in
   ignore( subscribe' : ( unit Deferred.t))
+
+(* TODO unsubscribe and subscribe are almost exactly identical. Refactor *)
+(* TODO not currently working *)
+let unsubscribe ?(qos=1) ~topics w =
+  let unsubscribe' = 
+    let payload =  
+      (if qos > 0 then get_msg_id_bytes else "") ^ 
+      List.fold_left 
+      (fun a topic -> 
+        a^ (*accumulator*)
+        int_to_str2(String.length topic)^ (* 2bytes for len*)
+        topic  (* topic *)
+      ) "" topics in
+    let remaining_len = 
+      List.map (fun i -> char_of_int i) (multi_byte_len (String.length payload)) 
+      |> charlist_to_str in
+    let unsubscribe_str = 
+      (string_of_char (msg_header UNSUBSCRIBE false 1 false)) ^ 
+      remaining_len ^
+      payload in
+    Writer.write ~pos:0 ~len:(String.length unsubscribe_str) w unsubscribe_str;
+    Writer.flushed w in
+  ignore( unsubscribe' : ( unit Deferred.t))
   
 let publish ?(dup=false) ?(qos=0) ?(retain=false) topic payload w =
   let msg_id_str = if qos > 0 then get_msg_id_bytes else "" in
@@ -307,22 +351,30 @@ let publish_periodically ?(qos=0) ?(period=1.0) ~topic f w =
     fun () -> publish_periodically' () in
   ignore(publish_periodically' () : (unit Deferred.t) )
 
-let connect_to_broker ~broker ~port f =
+let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default) 
+  ?(dup=false) ?(qos=0) ?(retain=false) ~broker ~port f =
   let connect_to_broker' () = 
-    let clientid = "OCaml_"^Core.Std.Uuid.to_string (Core.Std.Uuid.create () ) in
+    (* keepalive timer, adding 1 below just to make the interval 1 sec longer than
+       the ping_loop for safety sake *)
+    let ka_timer_str = int_to_str2( int_of_float keep_alive_interval+1) in
+    (* clientid string should be no longer that 23 chars *)
+    let clientid = "OCaml_"^
+      String.sub (Core.Std.Uuid.to_string (Core.Std.Uuid.create () )) 0 17 in
     let connect_str = (charlist_to_str [
-      (msg_header CONNECT false 0 false); 
+      (msg_header CONNECT dup qos retain); 
       Char.chr (14+ (String.length clientid)); (* remaining length *)
       Char.chr 0x00; (* protocol length MSB *) 
       Char.chr 0x06; (* protocol length LSB *) 
       'M';'Q';'I';'s';'d';'p'; (* protocol *)
       Char.chr version; 
       Char.chr 0x00; (* connect flags *)
-      Char.chr 0x00; (* keep alive timer MSB*)
-      Char.chr 0x0F;  (* keep alive timer LSB*)
+      ka_timer_str.[0]; (* keep alive timer MSB*)
+      ka_timer_str.[1];  (* keep alive timer LSB*)
       Char.chr 0x00; (* client ID len MSB *)
       Char.chr 0x05; (* client ID len LSB *)
     ])^clientid in
+    (* TODO: connect flags: User name flag, password flag, will retain, will qos will flag,
+             clean session need to be implemented *)
     let _ = printf "connect_str length: %d \n" (String.length connect_str) in
     let _ = printf "connect_str is: %s \n" connect_str in
   
@@ -336,7 +388,7 @@ let connect_to_broker ~broker ~port f =
     | Ok pass_str  -> 
       printf "Ok: %s\n" pass_str ;
       ignore(receive_packets t.reader t.writer) ;(*>>=*)
-      ignore (ping_loop t.writer) ;
+      ignore (ping_loop ~interval:keep_alive_interval t.writer) ;
       f t  ;
       fun () -> Writer.close t.writer >>|
       fun () -> Reader.close

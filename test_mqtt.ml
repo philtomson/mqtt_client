@@ -12,11 +12,15 @@ let run ~broker ~port () =
                              printf "Topic: %s\n" topic;
                              printf "Payload: %s\n" payload;
                              printf "Msg_id is: %d\n" msg_id;
-                             if topic = "PING" && payload.[0] <> 'A' then
+                             if topic = "PING" && payload.[0] <> 'A' then begin
                                ignore(publish ~qos:1 "PING" "A PONG to your PING!" t.writer)
+                             end;
+                             ignore(unsubscribe ~topics:["#"] t.writer)
+(**)
+                             
                           );
      printf "Start user section\n";
-     subscribe ["#"] t.writer ;
+     subscribe ~topics:["#"] t.writer ;
      publish_periodically ~topic:"temperature" (fun () -> string_of_float(get_temperature ()) ) t.writer;
    ); 
    Deferred.never () 

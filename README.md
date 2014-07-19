@@ -7,8 +7,8 @@ Current status:
 * pingreq (stayalive ping)
 
 Dependencies:
-* Core
-* Async
+* Core  (opam install core)
+* Async (opam install async)
 
 To build:
 $ corebuild -pkg async,unix  test_mqtt.native
