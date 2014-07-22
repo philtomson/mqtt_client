@@ -7,7 +7,9 @@ let get_temperature () =
 
 let run ~broker ~port () =  
    Pipe.set_size_budget pr 256 ;
-   connect_to_broker ~broker ~port (fun t  ->
+   (*connect_to_broker  ~will_topic:"willtop" ~will_message:"willmsg" ~broker
+    * ~port (fun t  ->*)
+   connect_to_broker   ~broker ~port (fun t  ->
      process_publish_pkt ( fun topic payload msg_id -> 
                              printf "Topic: %s\n" topic;
                              printf "Payload: %s\n" payload;

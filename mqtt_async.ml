@@ -18,6 +18,9 @@ let int_to_str2 i =
   (string_of_char (char_of_int ((i lsr 8) land 0xFF))) ^ 
   (string_of_char (char_of_int (i land 0xFF)))
 
+let encode_string str = 
+  (int_to_str2 (String.length str)) ^ str
+
 (* 2 char string to int *)
 let str2_to_int s = (((int_of_char s.[0]) lsl 8) land 0xFF00) lor 
                     ((int_of_char s.[1]) land 0xFF) 
@@ -145,8 +148,8 @@ let str_to_intlist s = List.map (fun c -> Char.code c) (str_to_charlist s)
   
 let msg_header msg dup qos retain =
   char_of_int ((((msg_type_to_int msg) land 0xFF) lsl 4) lor
-               ((if dup then 0x1 else 0x0) lsl        3) lor
-               ((qos land 0x03) lsl                   1) lor
+               ((if dup then 0x1 else 0x0)        lsl 3) lor
+               ((qos land 0x03)                   lsl 1) lor
                (if retain then 0x1 else 0x0))
 
 let get_header reader = 
@@ -294,8 +297,7 @@ let subscribe ?(qos=1) ~topics w =
       List.fold_left 
         (fun a topic -> 
           a^ (*accumulator*)
-          int_to_str2(String.length topic)^ (* 2bytes for len*)
-	  topic ^ (* topic *)
+          (encode_string topic) ^
 	  string_of_char (char_of_int qos)  
         ) "" topics in
     let remaining_len = List.map (fun i -> char_of_int i) (multi_byte_len (String.length payload)) 
@@ -316,8 +318,7 @@ let unsubscribe ?(qos=1) ~topics w =
       List.fold_left 
       (fun a topic -> 
         a^ (*accumulator*)
-        int_to_str2(String.length topic)^ (* 2bytes for len*)
-        topic  (* topic *)
+        encode_string topic
       ) "" topics in
     let remaining_len = 
       List.map (fun i -> char_of_int i) (multi_byte_len (String.length payload)) 
@@ -332,8 +333,7 @@ let unsubscribe ?(qos=1) ~topics w =
   
 let publish ?(dup=false) ?(qos=0) ?(retain=false) topic payload w =
   let msg_id_str = if qos > 0 then get_msg_id_bytes else "" in
-  let topic_len_str = int_to_str2 (String.length topic) in
-  let var_header = topic_len_str ^ topic ^ msg_id_str in
+  let var_header = (encode_string topic) ^ msg_id_str in
   let publish_str' = var_header ^ payload in
   let remaining_bytes = List.map (fun i -> char_of_int i) (multi_byte_len (String.length publish_str'))
                        |> charlist_to_str in
@@ -352,7 +352,23 @@ let publish_periodically ?(qos=0) ?(period=1.0) ~topic f w =
   ignore(publish_periodically' () : (unit Deferred.t) )
 
 let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default) 
-  ?(dup=false) ?(qos=0) ?(retain=false) ~broker ~port f =
+  ?(dup=false) ?(qos=0) ?(retain=false) ?(username="") ?(password="")
+  ?(will_message="") ?(will_topic="") ?(clean_session=true) ?(will_qos=0) 
+  ?(will_retain=false) ~broker ~port f =
+  let _ = printf "will_topic is: %s\n" will_topic in 
+  let connect_flags = 
+    ((if clean_session then 0x02 else 0) lor
+    (if (String.length will_topic ) > 0 then 0x04 else 0) lor
+    ((will_qos land 0x03) lsl 3) lor
+    (if will_retain then 0x20 else 0) lor
+    (if (String.length password) > 0 then 0x40 else 0) lor
+    (if (String.length username) > 0 then 0x80 else 0)) in    
+  let payload = 
+    (if (String.length will_topic)> 0 then encode_string will_topic else "")^
+    (if (String.length will_message)>0 then encode_string will_message else "")^
+    (if (String.length password) >0 then encode_string password else "")^
+    (if (String.length username) >0 then encode_string username else "") in
+  let _ = printf "payload is:%s\n" payload in
   let connect_to_broker' () = 
     (* keepalive timer, adding 1 below just to make the interval 1 sec longer than
        the ping_loop for safety sake *)
@@ -367,22 +383,24 @@ let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default)
       Char.chr 0x06; (* protocol length LSB *) 
       'M';'Q';'I';'s';'d';'p'; (* protocol *)
       Char.chr version; 
-      Char.chr 0x00; (* connect flags *)
+      Char.chr connect_flags; (* connect flags *)
       ka_timer_str.[0]; (* keep alive timer MSB*)
       ka_timer_str.[1];  (* keep alive timer LSB*)
       Char.chr 0x00; (* client ID len MSB *)
       Char.chr 0x05; (* client ID len LSB *)
-    ])^clientid in
+    ])^clientid^payload in
     (* TODO: connect flags: User name flag, password flag, will retain, will qos will flag,
              clean session need to be implemented *)
-    let _ = printf "connect_str length: %d \n" (String.length connect_str) in
-    let _ = printf "connect_str is: %s \n" connect_str in
+    let _ = printf ">> connect_str length: %d \n" (String.length connect_str) in
+    let _ = printf ">> connect_str is: %s \n" connect_str in
+    let _ = printf ">> connect_flags is: %x\n" connect_flags in
+    let _ = printf ">> payload is:%s\n" payload in
   
     connect ~host:broker ~port:port
     >>= fun t -> 
     printf "Connected!\n";
     (Writer.write ~pos:0 ~len:(String.length connect_str) t.writer connect_str) ;
-    printf "wait for connack...\n";
+    printf "Wait for CONNACK...\n";
     receive_connack t.reader >>|
     function 
     | Ok pass_str  -> 
