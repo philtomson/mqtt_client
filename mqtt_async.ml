@@ -13,6 +13,9 @@ let msg_id = ref 0
 
 type bytes_char_t = { lsb: char; msb: char }
 
+let print_str str = 
+  String.iter (fun c -> printf "0x%x -> %c, " (int_of_char c) c) str
+
 (* pass in an int and get two char string back *)
 let int_to_str2 i = 
   (string_of_char (char_of_int ((i lsr 8) land 0xFF))) ^ 
@@ -366,8 +369,8 @@ let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default)
   let payload = 
     (if (String.length will_topic)> 0 then encode_string will_topic else "")^
     (if (String.length will_message)>0 then encode_string will_message else "")^
-    (if (String.length password) >0 then encode_string password else "")^
-    (if (String.length username) >0 then encode_string username else "") in
+    (if (String.length username) >0 then encode_string username else "") ^
+    (if (String.length password) >0 then encode_string password else "") in
   let _ = printf "payload is:%s\n" payload in
   let connect_to_broker' () = 
     (* keepalive timer, adding 1 below just to make the interval 1 sec longer than
@@ -378,7 +381,7 @@ let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default)
       String.sub (Core.Std.Uuid.to_string (Core.Std.Uuid.create () )) 0 17 in
     let connect_str = (charlist_to_str [
       (msg_header CONNECT dup qos retain); 
-      Char.chr (14+ (String.length clientid)); (* remaining length *)
+      Char.chr (14+(String.length clientid)+(String.length payload)); (* remaining length *)
       Char.chr 0x00; (* protocol length MSB *) 
       Char.chr 0x06; (* protocol length LSB *) 
       'M';'Q';'I';'s';'d';'p'; (* protocol *)
@@ -386,15 +389,16 @@ let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default)
       Char.chr connect_flags; (* connect flags *)
       ka_timer_str.[0]; (* keep alive timer MSB*)
       ka_timer_str.[1];  (* keep alive timer LSB*)
-      Char.chr 0x00; (* client ID len MSB *)
-      Char.chr 0x05; (* client ID len LSB *)
-    ])^clientid^payload in
+      (*Char.chr 0x00; (* client ID len MSB *)
+      Char.chr 0x05; (* client ID len LSB *)*)
+    ])^(encode_string clientid)^payload in
     (* TODO: connect flags: User name flag, password flag, will retain, will qos will flag,
              clean session need to be implemented *)
     let _ = printf ">> connect_str length: %d \n" (String.length connect_str) in
     let _ = printf ">> connect_str is: %s \n" connect_str in
     let _ = printf ">> connect_flags is: %x\n" connect_flags in
     let _ = printf ">> payload is:%s\n" payload in
+    let _ = print_str connect_str in
   
     connect ~host:broker ~port:port
     >>= fun t -> 
