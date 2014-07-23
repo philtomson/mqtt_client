@@ -334,7 +334,7 @@ let unsubscribe ?(qos=1) ~topics w =
     Writer.flushed w in
   ignore( unsubscribe' : ( unit Deferred.t))
   
-let publish ?(dup=false) ?(qos=0) ?(retain=false) topic payload w =
+let publish ?(dup=false) ?(qos=0) ?(retain=false) ~topic ~payload w =
   let msg_id_str = if qos > 0 then get_msg_id_bytes else "" in
   let var_header = (encode_string topic) ^ msg_id_str in
   let publish_str' = var_header ^ payload in
@@ -350,7 +350,7 @@ let publish_periodically ?(qos=0) ?(period=1.0) ~topic f w =
   let rec publish_periodically' () =
     let pub_str = f () in
     after (Core.Time.Span.of_sec period) >>=
-    fun () -> publish ~qos topic pub_str w >>=
+    fun () -> publish ~qos ~topic ~payload:pub_str w >>=
     fun () -> publish_periodically' () in
   ignore(publish_periodically' () : (unit Deferred.t) )
 
@@ -389,9 +389,9 @@ let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default)
       Char.chr connect_flags; (* connect flags *)
       ka_timer_str.[0]; (* keep alive timer MSB*)
       ka_timer_str.[1];  (* keep alive timer LSB*)
-      (*Char.chr 0x00; (* client ID len MSB *)
-      Char.chr 0x05; (* client ID len LSB *)*)
-    ])^(encode_string clientid)^payload in
+    ])^
+    (encode_string clientid)^
+    payload in
     (* TODO: connect flags: User name flag, password flag, will retain, will qos will flag,
              clean session need to be implemented *)
     let _ = printf ">> connect_str length: %d \n" (String.length connect_str) in

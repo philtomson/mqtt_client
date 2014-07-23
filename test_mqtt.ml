@@ -11,13 +11,14 @@ let run ~broker ~port () =
     * ~port (fun t  ->*)
    (*connect_to_broker ~password:"password" ~username:"test"  ~broker ~port (fun
      * t  -> *)
-   connect_to_broker ~password:"password" ~username:"test"  ~broker ~port (fun t  ->
+   connect_to_broker ~will_topic:"lastwill" ~will_message:"goodbye cruel world"
+   ~password:"password" ~username:"test"  ~broker ~port (fun t  ->
      process_publish_pkt ( fun topic payload msg_id -> 
                              printf "Topic: %s\n" topic;
                              printf "Payload: %s\n" payload;
                              printf "Msg_id is: %d\n" msg_id;
                              if topic = "PING" && payload.[0] <> 'A' then begin
-                               ignore(publish ~qos:1 "PING" "A PONG to your PING!" t.writer)
+                               ignore(publish ~qos:1 ~topic:"PING" ~payload:"A PONG to your PING!" t.writer)
                              end;
                              ignore(unsubscribe ~topics:["#"] t.writer)
 (**)

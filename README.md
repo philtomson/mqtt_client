@@ -4,6 +4,7 @@ Current status:
 
 * publish
 * subscribe
+* unsubscribe
 * pingreq (stayalive ping)
 
 Dependencies:
