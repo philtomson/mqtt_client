@@ -354,6 +354,7 @@ let publish_periodically ?(qos=0) ?(period=1.0) ~topic f w =
     fun () -> publish_periodically' () in
   ignore(publish_periodically' () : (unit Deferred.t) )
 
+   
 let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default) 
   ?(dup=false) ?(qos=0) ?(retain=false) ?(username="") ?(password="")
   ?(will_message="") ?(will_topic="") ?(clean_session=true) ?(will_qos=0) 
@@ -366,40 +367,36 @@ let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default)
     (if will_retain then 0x20 else 0) lor
     (if (String.length password) > 0 then 0x40 else 0) lor
     (if (String.length username) > 0 then 0x80 else 0)) in    
+ (* keepalive timer, adding 1 below just to make the interval 1 sec longer than
+       the ping_loop for safety sake *)
+  let ka_timer_str = int_to_str2( int_of_float keep_alive_interval+1) in
+  let variable_header = (encode_string "MQIsdp") ^ 
+                        (string_of_char (char_of_int version)) ^
+                        (string_of_char (char_of_int connect_flags)) ^
+                        ka_timer_str in
+  (* clientid string should be no longer that 23 chars *)
+  let clientid = "OCaml_"^
+    String.sub (Core.Std.Uuid.to_string (Core.Std.Uuid.create () )) 0 17 in
   let payload = 
+    (encode_string clientid) ^
     (if (String.length will_topic)> 0 then encode_string will_topic else "")^
     (if (String.length will_message)>0 then encode_string will_message else "")^
     (if (String.length username) >0 then encode_string username else "") ^
     (if (String.length password) >0 then encode_string password else "") in
+  let vheader_payload = variable_header ^ payload in
+  let remaining_len = (multi_byte_len (String.length vheader_payload) ) 
+                      |> List.map (fun i -> char_of_int i) 
+                      |> charlist_to_str in
   let _ = printf "payload is:%s\n" payload in
   let connect_to_broker' () = 
-    (* keepalive timer, adding 1 below just to make the interval 1 sec longer than
-       the ping_loop for safety sake *)
-    let ka_timer_str = int_to_str2( int_of_float keep_alive_interval+1) in
-    (* clientid string should be no longer that 23 chars *)
-    let clientid = "OCaml_"^
-      String.sub (Core.Std.Uuid.to_string (Core.Std.Uuid.create () )) 0 17 in
-    let connect_str = (charlist_to_str [
-      (msg_header CONNECT dup qos retain); 
-      Char.chr (14+(String.length clientid)+(String.length payload)); (* remaining length *)
-      Char.chr 0x00; (* protocol length MSB *) 
-      Char.chr 0x06; (* protocol length LSB *) 
-      'M';'Q';'I';'s';'d';'p'; (* protocol *)
-      Char.chr version; 
-      Char.chr connect_flags; (* connect flags *)
-      ka_timer_str.[0]; (* keep alive timer MSB*)
-      ka_timer_str.[1];  (* keep alive timer LSB*)
-    ])^
-    (encode_string clientid)^
-    payload in
-    (* TODO: connect flags: User name flag, password flag, will retain, will qos will flag,
-             clean session need to be implemented *)
+    let connect_str = (string_of_char (msg_header CONNECT dup qos retain)) ^
+                      remaining_len ^ 
+                      vheader_payload in
     let _ = printf ">> connect_str length: %d \n" (String.length connect_str) in
     let _ = printf ">> connect_str is: %s \n" connect_str in
     let _ = printf ">> connect_flags is: %x\n" connect_flags in
     let _ = printf ">> payload is:%s\n" payload in
     let _ = print_str connect_str in
-  
     connect ~host:broker ~port:port
     >>= fun t -> 
     printf "Connected!\n";
@@ -418,4 +415,3 @@ let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default)
       failwith errstr in
   ignore(connect_to_broker' () )
 
-   
