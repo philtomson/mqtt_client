@@ -195,36 +195,37 @@ let rec receive_packets reader writer =
   receive_packet reader >>=
   function
   | Error _ -> return ()
-  | Ok header -> (match header.msg with  
-                  | PUBLISH ->
-                     (
-                     (* only concerned about PUBLISH packets for now*) 
-                     (* get payload from the buffer *)
-                      (printf "\nGot a PUBLISH packet back from server\n");
-                     let msg_id_len = (if header.qos = 0 then 0 else 2) in
-                     let topic_len = ( (Char.code header.buffer.[0]) lsl 8) lor 
-                                     (0xFF land (Char.code header.buffer.[1])) in
-                     let topic =   String.sub header.buffer 2 topic_len in
-
-                     let msg_id = ( if header.qos = 0 then 0 
-                                    else ((Char.code header.buffer.[topic_len+2]) lsl 8) lor
-                                     (0xFF land (Char.code header.buffer.[topic_len+3])) ) in
-
-                     let payload_len=header.remaining_len - topic_len - 2 - msg_id_len in
-                     let payload = Some (String.sub header.buffer (topic_len + 2 + msg_id_len) payload_len) in
-                     Pipe.write pw { header ; 
-                                     topic ;
-                                     msg_id;
-                                     payload 
-                                   } >>=
-                     fun () -> send_puback writer (int_to_str2 msg_id)
-                     )
-                  | _ ->
-                    (
-                     printf "received %s msg from server\n" (msg_type_to_str header.msg);
-                     (* TODO: implement QOS responses*)
-                     return () )) 
-                  >>= fun() -> receive_packets reader writer
+  | Ok header -> 
+      (match header.msg with  
+       | PUBLISH ->
+         (
+         (* only concerned about PUBLISH packets for now*) 
+         (* get payload from the buffer *)
+         (printf "\nGot a PUBLISH packet back from server\n");
+         let msg_id_len = (if header.qos = 0 then 0 else 2) in
+         let topic_len = ( (Char.code header.buffer.[0]) lsl 8) lor 
+                         (0xFF land (Char.code header.buffer.[1])) in
+         let topic =   String.sub header.buffer 2 topic_len in
+         let msg_id = 
+           ( if header.qos = 0 then 0 
+             else ((Char.code header.buffer.[topic_len+2]) lsl 8) lor
+                  (0xFF land (Char.code header.buffer.[topic_len+3])) ) in
+         let payload_len=header.remaining_len - topic_len - 2 - msg_id_len in
+         let payload = Some (String.sub header.buffer (topic_len + 2 + msg_id_len) payload_len) in
+         Pipe.write pw { header ; 
+                         topic ;
+                         msg_id;
+                         payload 
+                       } >>=
+         fun () -> send_puback writer (int_to_str2 msg_id)
+         )
+       | _ ->
+         (
+         printf "received %s msg from server\n" (msg_type_to_str header.msg);
+         (* TODO: implement QOS responses*)
+         return () )
+         ) 
+       >>= fun() -> receive_packets reader writer
 
 (* process a PUBLISH packet received from broker 
    process_publish_pkt f 
@@ -313,7 +314,6 @@ let subscribe ?(qos=1) ~topics w =
   ignore( subscribe' : ( unit Deferred.t))
 
 (* TODO unsubscribe and subscribe are almost exactly identical. Refactor *)
-(* TODO not currently working *)
 let unsubscribe ?(qos=1) ~topics w =
   let unsubscribe' = 
     let payload =  
@@ -367,8 +367,8 @@ let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default)
     (if will_retain then 0x20 else 0) lor
     (if (String.length password) > 0 then 0x40 else 0) lor
     (if (String.length username) > 0 then 0x80 else 0)) in    
- (* keepalive timer, adding 1 below just to make the interval 1 sec longer than
-       the ping_loop for safety sake *)
+(* keepalive timer, adding 1 below just to make the interval 1 sec longer than
+   the ping_loop for safety sake *)
   let ka_timer_str = int_to_str2( int_of_float keep_alive_interval+1) in
   let variable_header = (encode_string "MQIsdp") ^ 
                         (string_of_char (char_of_int version)) ^
