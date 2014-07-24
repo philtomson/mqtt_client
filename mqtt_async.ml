@@ -37,9 +37,21 @@ type t = {
     writer: Writer.t;
 }
 
-type msg_type = CONNECT | CONNACK | PUBLISH | PUBACK | PUBREC | PUBREL | PUBCOMP |
-                SUBSCRIBE | SUBACK | UNSUBSCRIBE | UNSUBACK | PINGREQ | PINGRESP |
-                DISONNECT | RESERVED                 
+type msg_type = CONNECT 
+              | CONNACK 
+              | PUBLISH 
+              | PUBACK 
+              | PUBREC 
+              | PUBREL 
+              | PUBCOMP 
+              | SUBSCRIBE 
+              | SUBACK 
+              | UNSUBSCRIBE 
+              | UNSUBACK 
+              | PINGREQ 
+              | PINGRESP 
+              | DISONNECT 
+              | RESERVED                 
 
 type header_t = {    msg:            msg_type;
                      dup:            bool;
@@ -111,11 +123,8 @@ let int_to_msg_type b = match b with
 | 15 -> Some RESERVED    
 | _  -> None
 
-
-let max_packet_size = 128 
 let keepalive       = 15
 let version         = 3
-
 
 let charlist_to_str l =
   let len = List.length l in
@@ -134,7 +143,8 @@ let get_remaining_len reader =
         | `Ok c -> let digit = Char.code c in
                    match (digit land 128) with
                    | 0 ->  return (value + ((digit land 127) * multiplier))
-                   | _ ->  aux (multiplier * 128) ( value + ((digit land 127) * multiplier)) in
+                   | _ ->  aux (multiplier * 128) ( value + ((digit land 127)* 
+                               multiplier)) in
     aux 1 0   
 
 
@@ -205,7 +215,7 @@ let rec receive_packets reader writer =
          let msg_id_len = (if header.qos = 0 then 0 else 2) in
          let topic_len = ( (Char.code header.buffer.[0]) lsl 8) lor 
                          (0xFF land (Char.code header.buffer.[1])) in
-         let topic =   String.sub header.buffer 2 topic_len in
+         let topic =  String.sub header.buffer 2 topic_len in
          let msg_id = 
            ( if header.qos = 0 then 0 
              else ((Char.code header.buffer.[topic_len+2]) lsl 8) lor
