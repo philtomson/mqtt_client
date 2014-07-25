@@ -1,4 +1,4 @@
-The start of an MQTT client in OCaml using Core.Async
+MQTT client in OCaml using Core.Async
 
 Current status: 
 
