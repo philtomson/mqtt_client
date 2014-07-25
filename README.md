@@ -19,4 +19,5 @@ $ test_mqtt.native [-port <port_num>] [-broker <broker address>]
 
 
 TODO:
+* create OPAM package
 * get working with mirage
