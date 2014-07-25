@@ -12,14 +12,11 @@ Dependencies:
 * Async (opam install async)
 
 To build:
-$ corebuild -pkg async,unix  test_mqtt.native
+$ corebuild -pkg async,unix mqtt_async.ml test_mqtt.native
 
 To run:
 $ test_mqtt.native [-port <port_num>] [-broker <broker address>]
 
-(NOTE: currently hardcoded to connect to the MQTT testing broker at test.mosquitto.org)
 
 TODO:
-* commandline interface
-* support rest of packet types
-
+* get working with mirage

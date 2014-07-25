@@ -1,36 +1,66 @@
+(** mqtt_async.ml: MQTT client library written in OCaml 
+ * Based on spec at: 
+ * http://public.dhe.ibm.com/software/dw/webservices/ws-mqtt/mqtt-v3r1.html  
+ * *)
 open Sys
 open Unix
 open Async.Std
-(* compile with: 
-ocamlfind ocamlopt -package bitstring,bitstring.syntax -syntax bitstring.syntax -linkpkg mqtt.ml -o mqtt
+(* compile example code (test_mqtt.ml) with: 
+  $ corebuild -pkg async,unix  mqtt_async.ml test_mqtt.native
 *)
 
+(* constants *)
 let keep_alive_timer_interval_default = 10.0  (*seconds*)
-
-let string_of_char c = String.make 1 c 
+let keepalive       = 15                      (*seconds*)
+let version         = 3                (* MQTT version *)
 
 let msg_id = ref 0
 
-type bytes_char_t = { lsb: char; msb: char }
+(* "private" Helper funcs *)
+(** int_to_str2:  pass in an int and get a two-char string back *)
+let string_of_char c = String.make 1 c 
 
 let print_str str = 
   String.iter (fun c -> printf "0x%x -> %c, " (int_of_char c) c) str
 
-(* pass in an int and get two char string back *)
+(** int_to_str2: integer (up to 65535) to 2 byte encoded string *)
+(* TODO: should probably throw exception if i is greater than 65535 *)
 let int_to_str2 i = 
   (string_of_char (char_of_int ((i lsr 8) land 0xFF))) ^ 
   (string_of_char (char_of_int (i land 0xFF)))
 
+(** encode_string: Given a string returns two-byte length follwed by string *)
 let encode_string str = 
   (int_to_str2 (String.length str)) ^ str
 
-(* 2 char string to int *)
+(** str2_to_int: 2 char string to int *)
 let str2_to_int s = (((int_of_char s.[0]) lsl 8) land 0xFF00) lor 
                     ((int_of_char s.[1]) land 0xFF) 
 
+(** increment the current msg_id and return it as a 2 byte string *)
 let get_msg_id_bytes = 
   incr msg_id;
   int_to_str2 !msg_id
+
+let charlist_to_str l =
+  let len = List.length l in
+  let res = String.create len in
+  let rec imp i = function
+  | [] -> res
+  | c :: l -> res.[i] <- c; imp (i + 1) l in
+  imp 0 l;; 
+
+let str_to_charlist s = 
+  let rec aux s lst = 
+    let len = String.length s in
+    match  len with
+      0 -> lst
+    | _ -> (aux (String.sub s 1 (len-1)) (s.[0]::lst)) in
+  printf "str_to_chrlist\n";
+  List.rev (aux s []) 
+
+let str_to_intlist s = List.map (fun c -> Char.code c) (str_to_charlist s)
+(* end of "private" helper funcs *)
 
 type t = { 
     reader: Reader.t;
@@ -123,17 +153,6 @@ let int_to_msg_type b = match b with
 | 15 -> Some RESERVED    
 | _  -> None
 
-let keepalive       = 15
-let version         = 3
-
-let charlist_to_str l =
-  let len = List.length l in
-  let res = String.create len in
-  let rec imp i = function
-  | [] -> res
-  | c :: l -> res.[i] <- c; imp (i + 1) l in
-  imp 0 l;; 
-
 
 let get_remaining_len reader =
   let rec aux multiplier value =
@@ -148,16 +167,6 @@ let get_remaining_len reader =
     aux 1 0   
 
 
-let  str_to_charlist s = 
-  let rec aux s lst = 
-    let len = String.length s in
-    match  len with
-      0 -> lst
-    | _ -> (aux (String.sub s 1 (len-1)) (s.[0]::lst)) in
-  printf "str_to_chrlist\n";
-  List.rev (aux s []) 
-
-let str_to_intlist s = List.map (fun c -> Char.code c) (str_to_charlist s)
   
 let msg_header msg dup qos retain =
   char_of_int ((((msg_type_to_int msg) land 0xFF) lsl 4) lor
@@ -237,9 +246,12 @@ let rec receive_packets reader writer =
          ) 
        >>= fun() -> receive_packets reader writer
 
-(* process a PUBLISH packet received from broker 
-   process_publish_pkt f 
-   where topic, payload and msg_id are passed to f
+(** process_publish_pkt f: 
+  *  when a PUBLISH packet is received back from the broker, call the 
+  *  passed-in function f with topic, payload and message id. 
+  *  User supplies the function f which will process the publish packet
+  *  as the user sees fit. This function is called asynchronously whenever
+  *  a PUBLISH packet is received.
 *) 
 let process_publish_pkt f = 
   let rec process' ()  =
@@ -254,6 +266,8 @@ let process_publish_pkt f =
                          fun () -> process' ()   in
   ignore( process' () : (unit Deferred.t) )
 
+(** recieve_connack: wait for the CONNACT (Connection achnowledgement packet) 
+*)
 let receive_connack reader = 
   get_header reader 
   >>= fun header ->
@@ -271,6 +285,7 @@ let receive_connack reader =
       else
          (Core.Std.Result.Ok "connack received!") )
 
+(** connect: estabishes the Tcp socket connection to the broker *)
 let connect ~host ~port = 
   Tcp.to_host_and_port host port
   |> Tcp.connect
@@ -280,6 +295,9 @@ let connect ~host ~port =
       writer;
     }  
 
+(** send_ping_req: sents a PINGREQ packet to the broker to keep 
+ * the connetioon alive 
+ *)
 let send_ping_req w =
   let ping_str = charlist_to_str [
     (msg_header PINGREQ false 0 false);  
@@ -288,14 +306,16 @@ let send_ping_req w =
    Writer.write ~pos:0 ~len:(String.length ping_str) w ping_str ;
    Writer.flushed w 
    
-
+(** ping_loop: send a PINGREQ at regular intervals *)
 let rec ping_loop ?(interval=keep_alive_timer_interval_default) w = 
   after (Core.Time.Span.of_sec interval) >>=
   fun () -> printf "Ping\n"; 
             send_ping_req w >>=  
             fun () -> ping_loop w 
 
-
+(** multi_byte_len: The algorithm for encoding a decimal number into the 
+ * variable length encoding scheme (see section 2.1 of MQTT spec
+ *)
 let multi_byte_len len = 
   let rec aux bodylen acc = match bodylen with
   | 0 -> List.rev acc 
@@ -304,6 +324,7 @@ let multi_byte_len len =
          aux bodylen' (digit::acc) in
   aux len [] 
 
+(** subscribe to topics *)
 let subscribe ?(qos=1) ~topics w =
   let subscribe' = 
     let payload =  
@@ -344,6 +365,7 @@ let unsubscribe ?(qos=1) ~topics w =
     Writer.flushed w in
   ignore( unsubscribe' : ( unit Deferred.t))
   
+(** publish message to topic *)
 let publish ?(dup=false) ?(qos=0) ?(retain=false) ~topic ~payload w =
   let msg_id_str = if qos > 0 then get_msg_id_bytes else "" in
   let var_header = (encode_string topic) ^ msg_id_str in
@@ -356,6 +378,9 @@ let publish ?(dup=false) ?(qos=0) ?(retain=false) ~topic ~payload w =
   Writer.write ~pos:0 ~len:(String.length publish_str) w publish_str;
   Writer.flushed w 
 
+(** publish_periodically: periodically publish a message to 
+ * a topic, period specified by period in seconds (float)
+*)
 let publish_periodically ?(qos=0) ?(period=1.0) ~topic f w =
   let rec publish_periodically' () =
     let pub_str = f () in
@@ -364,7 +389,7 @@ let publish_periodically ?(qos=0) ?(period=1.0) ~topic f w =
     fun () -> publish_periodically' () in
   ignore(publish_periodically' () : (unit Deferred.t) )
 
-   
+(** connect_to_broker *)
 let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default) 
   ?(dup=false) ?(qos=0) ?(retain=false) ?(username="") ?(password="")
   ?(will_message="") ?(will_topic="") ?(clean_session=true) ?(will_qos=0) 

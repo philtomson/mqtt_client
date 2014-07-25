@@ -1,16 +1,23 @@
+(** test_mqtt.ml:
+  * Example useage of Mqtt_async module
+  * Subscribes to every topic (#) then waits for a message to 
+  * topic "PING" which doesn't start with 'A' at which point it 
+  * unsubscribes from topic and continues to send ping's to keep alive
+*)
+(* compile example code (test_mqtt.ml) with: 
+  $ corebuild -pkg async,unix  mqtt_async.ml test_mqtt.native
+*)
+
 open Sys
 open Async.Std
 open Mqtt_async
 
+(** get_temperature: fake temperature reading just for testing *)
 let get_temperature () = 
   20.0 +. Random.float 1.0 
 
 let run ~broker ~port () =  
    Pipe.set_size_budget pr 256 ;
-   (*connect_to_broker  ~will_topic:"willtop" ~will_message:"willmsg" ~broker
-    * ~port (fun t  ->*)
-   (*connect_to_broker ~password:"password" ~username:"test"  ~broker ~port (fun
-     * t  -> *)
    connect_to_broker ~will_topic:"lastwill" ~will_message:"goodbye cruel world"
    ~password:"password" ~username:"test"  ~broker ~port (fun t  ->
      process_publish_pkt ( fun topic payload msg_id -> 
