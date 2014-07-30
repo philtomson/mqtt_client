@@ -9,11 +9,14 @@ configure:	oasis-setup
 build: setup.data 
 				ocaml setup.ml -build
 
-install: _build/mqtt_async.cmxa
+install: _build/mqtt_async.cmx
 				ocaml setup.ml -install
 
+reinstall: _build/mqtt_async.cmx
+				ocaml setup.ml -reinstall
+
 uninstall: 
-				ocaml setup.ml -install
+				ocaml setup.ml -uninstall
 
 clean: 
 				ocaml setup.ml -clean
