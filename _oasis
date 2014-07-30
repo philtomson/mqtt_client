@@ -1,0 +1,25 @@
+OASISFormat: 0.4
+Name:        mqtt_client
+Version:     0.0.1
+Synopsis:    MQTT client written in OCaml
+Authors:     Phil Tomson
+License:     MIT
+Plugins:     META (0.3)
+
+Library mqtt_client
+  Path:       .
+  BuildTools: ocamlbuild
+  Modules:    Mqtt_async
+  BuildDepends: async,unix,threads
+  CompiledObject: native
+  Install:     true
+  XMETARequires: async,unix,threads
+  
+Executable test_mqtt
+  Path:       ./examples
+  BuildTools: ocamlbuild
+  MainIs:     test_mqtt.ml
+  BuildDepends: async,unix,threads
+  CompiledObject: native
+  Install: false
+  

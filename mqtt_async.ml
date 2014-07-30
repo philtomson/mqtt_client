@@ -153,7 +153,8 @@ let int_to_msg_type b = match b with
 | 15 -> Some RESERVED    
 | _  -> None
 
-
+(* get_remaining_len: find the number of remaining bytes needed 
+ * for this packet *)
 let get_remaining_len reader =
   let rec aux multiplier value =
     Reader.read_char reader
@@ -213,8 +214,8 @@ let send_puback w msg_idstr =
 let rec receive_packets reader writer = 
   receive_packet reader >>=
   function
-  | Error _ -> return ()
-  | Ok header -> 
+  | Core.Std.Result.Error _ -> return ()
+  | Core.Std.Result.Ok header -> 
       (match header.msg with  
        | PUBLISH ->
          (
@@ -439,14 +440,14 @@ let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default)
     printf "Wait for CONNACK...\n";
     receive_connack t.reader >>|
     function 
-    | Ok pass_str  -> 
+    | Core.Std.Result.Ok pass_str  -> 
       printf "Ok: %s\n" pass_str ;
       ignore(receive_packets t.reader t.writer) ;(*>>=*)
       ignore (ping_loop ~interval:keep_alive_interval t.writer) ;
       f t  ;
       fun () -> Writer.close t.writer >>|
       fun () -> Reader.close
-    | Error errstr ->  
+    | Core.Std.Result.Error errstr ->  
       failwith errstr in
   ignore(connect_to_broker' () )
 
