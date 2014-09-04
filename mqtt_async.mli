@@ -1,12 +1,28 @@
-open Sys
-open Unix
-open Async.Std
-
 val keep_alive_timer_interval_default : float
 val keepalive : int
 val version : int
 val msg_id : int ref
-type t = { reader : Async_unix.Reader.t; writer : Async_unix.Writer.t; }
+val string_of_char : char -> string
+val print_str : string -> unit
+val int_to_str2 : int -> string
+val encode_string : string -> string
+val str2_to_int : string -> int
+val get_msg_id_bytes : string
+val charlist_to_str : char list -> string
+val str_to_charlist : string -> char list
+val str_to_intlist : string -> int list
+
+module type CONN = sig
+  type reader
+  type writer
+  type t
+  val connect: host:string -> port:int -> t 
+end
+
+module Connection :
+  sig
+    type t = { reader : Async_unix.Reader.t; writer : Async_unix.Writer.t; }
+  end
 type msg_type =
     CONNECT
   | CONNACK
@@ -56,7 +72,7 @@ val process_publish_pkt : (string -> string -> int -> unit) -> unit
 val receive_connack :
   Async_unix.Reader.t ->
   (string, string) Core_kernel.Std_kernel._result Async_kernel.Deferred.t
-val connect : host:string -> port:int -> t Async_kernel.Deferred.t
+val connect : host:string -> port:int -> Connection.t Async_kernel.Deferred.t
 val send_ping_req : Async_unix.Writer.t -> unit Async_kernel.Deferred.t
 val ping_loop :
   ?interval:float -> Async_unix.Writer.t -> 'a Async_kernel.Deferred.t
@@ -85,4 +101,4 @@ val connect_to_broker :
   ?will_topic:string ->
   ?clean_session:bool ->
   ?will_qos:int ->
-  ?will_retain:bool -> broker:string -> port:int -> (t -> unit) -> unit
+  ?will_retain:bool -> broker:string -> port:int -> (Connection.t -> 'a) -> unit
