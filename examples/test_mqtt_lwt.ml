@@ -27,10 +27,6 @@ let run_client ~broker ~port () =
      (* first subscribe *)
      (subscribe ~topics:["#"] conn.write_chan)  >> 
      (process_publish_pkt conn ( fun topic payload msg_id -> 
-       (match (Lwt_unix.state conn.socket) with
-       | Lwt_unix.Opened -> puts "CONNECTION is OPEN"
-       | _ -> puts "CONNECTION NOT OPEN"
-       )>>
        puts (sprintf "Topic: %s\nPayload: %s\nMsg_id: %d\n" topic payload
              msg_id) >> 
              (if topic = "PING" && payload.[0] <> 'A' then (
@@ -40,18 +36,20 @@ let run_client ~broker ~port () =
                    conn.write_chan
               )
              else
+               (*
                 publish ~qos:1 ~topic:"PING" 
                    ~payload:"No Ping"
                    conn.write_chan
-                (*return ()*)
+               *)
+                return ()
              ) (*>>
              unsubscribe ~topics:["#"] conn.write_chan  
              *)
                              
-     )) (**) (*<&>
+     )) (**) <&>
      (publish_periodically ~topic:"temperature" (fun () ->
        string_of_float(get_temperature ()) ) conn.write_chan)
-     *)
+     
       
    ) 
    
@@ -59,17 +57,3 @@ let run_client ~broker ~port () =
 let () = 
   Printf.printf "Starting... 1,,,2,,,3\n";
   Lwt_main.run ( run_client ~broker:"test.mosquitto.org" ~port:1883 () )
-  (*
-  Command.async_basic
-    ~summary: "Subscribing to all messages (#)"
-    Command.Spec.(
-      empty
-      +> flag "-broker" (optional_with_default "test.mosquitto.org" string)
-         ~doc: "broker address (defaults to \"test.mosquitto.org\")"
-      +> flag "-port"   (optional_with_default 1883 int)
-         ~doc: "port (defaults to 1883)"
-     )
-     ( fun broker port () -> run ~broker ~port () )
-  |> Command.run
-  *)
-

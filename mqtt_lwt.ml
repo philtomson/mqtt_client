@@ -12,7 +12,7 @@ let puts str = Lwt_io.write_line Lwt_io.stdout (str ^ "\n") >>
 *)
 
 (* constants *)
-let keep_alive_timer_interval_default = 2.0  (*seconds*)
+let keep_alive_timer_interval_default = 10.0  (*seconds*)
 let keepalive       = 15                      (*seconds*)
 let version         = 3                (* MQTT version *)
 
@@ -198,7 +198,6 @@ let msg_header msg dup qos retain =
                (if retain then 0x1 else 0x0))
 
 let get_header istream = 
-  puts "get_header" >>
   Lwt_stream.next istream >>= 
   fun c ->
       let byte_1 = Char.code c in
@@ -217,19 +216,14 @@ let get_header istream =
 let receive_packet istream = 
   get_header istream 
   >>= fun header ->
-      (*Lwt_io.read reader ~len:header.remaining_len >>=*)
-    puts (sprintf "recieve_packet: now get buffer, #bytes: %d" header.remaining_len)>>
-    (*let buffer = (Lwt_stream.get_available_up_to header.remaining_len istream |>
-        charlist_to_str ) in*)
     lwt clist = Lwt_stream.nget header.remaining_len istream in
     let buffer = charlist_to_str clist in
-    (*
+    (* TODO: check for empty string
         if buffer = "" then
            (Lwt.fail (Failure ( "Failed to receive packet: " )))
         else 
           *)
           header.buffer <- buffer; 
-          puts (sprintf "Got buffer: %s len: %d" buffer (String.length buffer))  >>
           return header 
 
 let send_puback w msg_idstr =
@@ -239,10 +233,7 @@ let send_puback w msg_idstr =
       (* remaining length *)
   ] ^ msg_idstr in
    puts "Send PUBACK\n" >>
-   Lwt_io.write w puback_str (*>>= fun () ->
-   Writer.write ~pos:0 ~len:(String.length puback_str) w puback_str ;
-   Writer.flushed w 
-   *)
+   Lwt_io.write w puback_str 
 
 let rec receive_packets istream write_chan = 
   receive_packet istream >>=
@@ -263,21 +254,20 @@ let rec receive_packets istream write_chan =
                   (0xFF land (Char.code header.buffer.[topic_len+3])) ) in
          let payload_len=header.remaining_len - topic_len - 2 - msg_id_len in
          let payload = Some (String.sub header.buffer (topic_len + 2 + msg_id_len) payload_len) in
-         puts "push_pw!" >>
          return (push_pw (Some { header ; 
                                  topic ;
                                  msg_id;
                                  payload 
-                       })) >>=
-         fun () -> send_puback write_chan (int_to_str2 msg_id)
+                       })) >>
+         send_puback write_chan (int_to_str2 msg_id)
          )
        | _ ->
          (
-         puts (sprintf ">>> received %s msg from server\n <<<" (msg_type_to_str header.msg)) >>
+         puts (sprintf ">>> received %s msg from server <<<" (msg_type_to_str header.msg)) >>
          (* TODO: implement QOS responses*)
          return () )
          ) 
-       >>= fun() -> receive_packets istream write_chan
+       >> receive_packets istream write_chan
 
 (** process_publish_pkt f: 
   *  when a PUBLISH packet is received back from the broker, call the 
@@ -289,19 +279,14 @@ let rec receive_packets istream write_chan =
 let process_publish_pkt conn f = 
   puts "process_publish_pkt..." >>
   let rec process' ()  =
-    (match (Lwt_unix.state conn.socket) with
-    | Lwt_unix.Opened -> puts "CONNECTION is OPEN"
-    | _ -> puts "CONNECTION NOT OPEN"
-    )>>
-    puts "process'" >>
 	  Lwt_stream.get pr >>=
 	  fun pkt ->
        match pkt with 
-       | None -> puts "None packet\n"  (* TODO *)
+       | None -> puts "None packet!!"  (* TODO *)
        | Some { payload = None; _ } -> puts "No Payload!" 
        | Some { topic = t; payload = Some p; msg_id = m; _ }  -> 
-            (f t p m) >>=
-           fun () -> process' ()   in
+                (f t p m) >>
+                process' ()   in
    (process' () : (unit Lwt.t)) 
 
 (** recieve_connack: wait for the CONNACT (Connection achnowledgement packet) 
@@ -312,8 +297,8 @@ let receive_connack istream =
     if (header.msg <> CONNACK) then begin
       failwith "did not receive a CONNACK"
     end;
-    let buffer = (Lwt_stream.get_available_up_to header.remaining_len istream |>
-                  charlist_to_str ) in
+    lwt clist = Lwt_stream.nget header.remaining_len istream in
+    let buffer = charlist_to_str clist in
       if (int_of_char buffer.[header.remaining_len-1]) <> 0 then 
         Lwt.fail (Failure ( "Connection was not established\n " ))
       else (
@@ -358,7 +343,6 @@ let send_ping_req w_chan =
     (msg_header PINGREQ false 0 false);  
     Char.chr 0  (* remaining length *)
   ] in
-   puts "send_ping_req" >>
    Lwt_io.write w_chan ping_str >>
    Lwt_io.flush w_chan 
    
@@ -366,10 +350,6 @@ let send_ping_req w_chan =
 let rec ping_loop ?(interval=keep_alive_timer_interval_default) conn w = 
   Lwt_unix.sleep interval >> 
   puts "Ping\n" >>
-  (match (Lwt_unix.state conn.socket) with
-  | Lwt_unix.Opened -> puts "CONNECTION is OPEN"
-  | _ -> puts "CONNECTION NOT OPEN"
-  )>>
 
   (* TODO: for testing only!!! REMOVE!!! *)
   (*
@@ -459,13 +439,13 @@ let publish_periodically ?(qos=0) ?(period=1.0) ~topic f w =
   puts "publish_periodically" >>
   let rec publish_periodically' () =
     let pub_str = f () in
-    Lwt_unix.sleep period >>=
-    fun () -> publish ~qos ~topic ~payload:pub_str w >>=
-    fun () -> publish_periodically' () in
+    Lwt_unix.sleep period >>
+    publish ~qos ~topic ~payload:pub_str w >>
+    publish_periodically' () in
   (publish_periodically' () : (unit Lwt.t) )
 
 (** connect_to_broker *)
-let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default+.1.0) 
+let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default+.0.5) 
   ?(dup=false) ?(qos=0) ?(retain=false) ?(username="") ?(password="")
   ?(will_message="") ?(will_topic="") ?(clean_session=true) ?(will_qos=0) 
   ?(will_retain=false) ~broker ~port f =
@@ -513,20 +493,9 @@ let connect_to_broker ?(keep_alive_interval=keep_alive_timer_interval_default+.1
     Lwt_io.write t.write_chan connect_str >>
     puts "Wait for CONNACK...\n" >>
     receive_connack t.istream >>
-      (*subscribe ~topics:["#"] t.write_chan >> (*try this*)*)
-      (*
-      lwt _ = receive_packets t.istream t.write_chan
-      and _ = ping_loop ~interval:keep_alive_interval t.write_chan in
-      (f t) in 
-      *)
-      (
-      (ping_loop  ~interval:keep_alive_interval t t.write_chan ) <&>
+      ( (ping_loop  ~interval:keep_alive_interval t t.write_chan ) <&>
       (f t) <&>
-      (receive_packets t.istream t.write_chan) )(*<&>
+      (receive_packets t.istream t.write_chan) )
       
-      (f t)*)
        
-(*
-  connect_to_broker' () 
-*)
 
